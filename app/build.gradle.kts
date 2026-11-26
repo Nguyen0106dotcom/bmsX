@@ -65,5 +65,6 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.okhttp)
+    implementation(libs.vico.compose.m3)
     debugImplementation(libs.androidx.ui.tooling)
 }

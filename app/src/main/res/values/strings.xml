@@ -1,4 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Thiên Cơ Số</string>
+    <string name="nav_predict">Dự Đoán</string>
+    <string name="nav_algorithms">Thuật Toán</string>
+    <string name="nav_kqxs">KQXS</string>
+    <string name="nav_trial">Chơi Thử</string>
+    <string name="nav_settings">Cài Đặt</string>
+    <string name="hero_banner_desc">Minh họa phân tích xác suất xổ số Thiên Cơ Số</string>
+    <string name="run_prediction">Chạy Dự Đoán</string>
+    <string name="sync_data">Đồng Bộ Dữ Liệu</string>
+    <string name="firebase_ai_required_notice">Tính năng Gemini AI yêu cầu kích hoạt Firebase AI Logic (bạn đã từ chối thiết lập Firebase). Đang dùng bộ sinh công thức mẫu cục bộ để bạn xem trước và thử nghiệm.</string>
+    <string name="legal_disclaimer">Lưu ý: Ứng dụng phục vụ phân tích thống kê và nghiên cứu thuật toán xác suất trên dữ liệu lịch sử KQXS. Kết quả dự đoán chỉ mang tính tham khảo, không đảm bảo trúng thưởng. Tuân thủ quy định pháp luật hiện hành (Nghị định 389/2026/NĐ-CP).</string>
 </resources>
