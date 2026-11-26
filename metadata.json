@@ -1,0 +1,8 @@
+{
+  "name": "Thiên Cơ Số",
+  "description": "Phân tích, thống kê, backtest và dự đoán Xổ số Kiến Thiết Miền Bắc (XSMB) với AI Gemini và hệ thống đa thuật toán.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
