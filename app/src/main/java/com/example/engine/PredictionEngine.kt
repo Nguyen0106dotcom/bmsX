@@ -17,7 +17,9 @@ import com.example.data.StationDailyPrediction
 import com.example.data.StoredBundleRecord
 import com.example.data.VN_ZONE_ID
 import com.example.data.WinEvaluation
+import com.example.data.XsmbDashboardSummary
 import com.example.data.XsmbStation
+import com.example.data.XsmbStationAccuracyRow
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZonedDateTime
@@ -356,7 +358,8 @@ class PredictionEngine {
                     specialHitTop3 = spHit3,
                     specialHitTop10 = spHit10,
                     isProfileWin = winEval.isWin,
-                    prizeDetail = winEval.prizeDetail
+                    prizeDetail = winEval.prizeDetail,
+                    actualPrizeMap = draw.prizeMap
                 )
             )
         }
@@ -562,8 +565,19 @@ class PredictionEngine {
             stationFilter = stationFilter,
             stationOnlyHistory = stationOnlyHistory
         )
-        val chronoLogs = evalStats.dayLogs.sortedBy { it.date }
-        if (chronoLogs.isEmpty()) return null
+        return buildThirtyDayAccuracyTrendFromLogs(
+            dayLogs = evalStats.dayLogs,
+            stationLabel = if (profile.id == "xsmb") stationFilter.displayName else profile.shortName
+        )
+    }
+
+    fun buildThirtyDayAccuracyTrendFromLogs(
+        dayLogs: List<HistoricalVerificationDay>,
+        stationLabel: String,
+        maxPoints: Int = 30
+    ): ThirtyDayAccuracyChartData? {
+        val chronoLogs = dayLogs.sortedBy { it.date }.takeLast(maxPoints.coerceAtLeast(1))
+        if (chronoLogs.size < 2) return null
 
         var cum3 = 0
         var cum5 = 0
@@ -607,13 +621,68 @@ class PredictionEngine {
         val total = points.size.toDouble()
         return ThirtyDayAccuracyChartData(
             points = points,
-            stationLabel = if (profile.id == "xsmb") stationFilter.displayName else profile.shortName,
+            stationLabel = stationLabel,
             overallTop3Pct = cum3 * 100.0 / total,
             overallTop5Pct = cum5 * 100.0 / total,
             overallTop10Pct = cum10 * 100.0 / total,
             top3Hits = cum3,
             top5Hits = cum5,
             top10Hits = cum10
+        )
+    }
+
+    fun buildXsmbDashboardSummary(
+        stats: CombinedPerformanceStats,
+        windowDrawsRequested: Int
+    ): XsmbDashboardSummary {
+        val total = stats.totalDays.coerceAtLeast(0)
+        val chrono = stats.dayLogs.sortedBy { it.date }
+        val recent7 = chrono.takeLast(7)
+        val rCount = recent7.size.toDouble().coerceAtLeast(1.0)
+
+        var longestStreak = 0
+        var running = 0
+        for (day in chrono) {
+            if (day.isWinTop3) {
+                running++
+                if (running > longestStreak) longestStreak = running
+            } else {
+                running = 0
+            }
+        }
+        val currentStreak = running
+
+        val breakdowns = XsmbStation.PROVINCES.mapNotNull { station ->
+            val rows = chrono.filter { station.matchesDate(it.date) }
+            if (rows.isEmpty()) {
+                null
+            } else {
+                XsmbStationAccuracyRow(
+                    station = station,
+                    totalDraws = rows.size,
+                    top3Hits = rows.count { it.isWinTop3 },
+                    top5Hits = rows.count { it.isWinTop5 },
+                    top10Hits = rows.count { it.isWinTop10 },
+                    specialTop10Hits = rows.count { it.specialHitTop10 }
+                )
+            }
+        }
+
+        return XsmbDashboardSummary(
+            stats = stats,
+            windowDrawsRequested = windowDrawsRequested,
+            top1AccuracyPct = stats.top1Rate,
+            top3AccuracyPct = stats.top3Rate,
+            top5AccuracyPct = stats.top5Rate,
+            top10AccuracyPct = stats.top10Rate,
+            specialTop10AccuracyPct = if (total > 0) stats.specialTop10Hits * 100.0 / total else 0.0,
+            avgNhayTop3 = if (total > 0) stats.totalNhayTop3.toDouble() / total else 0.0,
+            recent7Top3AccuracyPct = if (recent7.isNotEmpty()) recent7.count { it.isWinTop3 } * 100.0 / rCount else 0.0,
+            recent7Top5AccuracyPct = if (recent7.isNotEmpty()) recent7.count { it.isWinTop5 } * 100.0 / rCount else 0.0,
+            recent7Top10AccuracyPct = if (recent7.isNotEmpty()) recent7.count { it.isWinTop10 } * 100.0 / rCount else 0.0,
+            longestTop3WinStreak = longestStreak,
+            currentTop3WinStreak = currentStreak,
+            stationBreakdowns = breakdowns
         )
     }
 }

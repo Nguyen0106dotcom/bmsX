@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -16,6 +17,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.Button
@@ -50,7 +53,8 @@ import java.time.LocalDate
 
 private enum class VerificationFilter(val label: String) {
     ALL("Tất cả"),
-    HITS_ONLY("Chỉ kỳ trúng"),
+    HITS_ONLY("Chỉ kỳ Đúng"),
+    WRONG_ONLY("Chỉ kỳ Sai"),
     SPECIAL_ONLY("Chỉ nổ ĐB")
 }
 
@@ -58,14 +62,17 @@ private enum class VerificationFilter(val label: String) {
 @Composable
 fun HistoricalVerificationCard(
     profile: LotteryProfile,
+    targetDate: LocalDate,
     fromDate: LocalDate,
     toDate: LocalDate,
+    activePresetCount: Int,
     isEvaluating: Boolean,
     stats: CombinedPerformanceStats?,
     selectedPredictDate: LocalDate,
     onSelectPresetDraws: (Int) -> Unit,
     onRunVerification: () -> Unit,
     onInspectPastDraw: (LocalDate) -> Unit,
+    onOpenKqxsForDate: (LocalDate) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val colors = LocalAnalyticsColors.current
@@ -77,7 +84,9 @@ fun HistoricalVerificationCard(
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.surface,
         border = BorderStroke(1.dp, colors.neutralBlue.copy(alpha = 0.45f)),
-        modifier = modifier.fillMaxWidth()
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("historical_verification_card")
     ) {
         Column(
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -89,18 +98,18 @@ fun HistoricalVerificationCard(
             ) {
                 Icon(
                     imageVector = Icons.Default.History,
-                    contentDescription = "Kiểm chứng lịch sử thuật toán",
+                    contentDescription = "Dự đoán các kỳ trước của kỳ hiện tại",
                     tint = colors.neutralBlue,
                     modifier = Modifier.size(22.dp)
                 )
                 Spacer(Modifier.width(8.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Kiểm Chứng Lịch Sử Thuật Toán",
+                        text = "Dự Đoán Các Kỳ Trước Của Kỳ ${targetDate.formatVn()}",
                         style = MaterialTheme.typography.titleMedium
                     )
                     Text(
-                        text = "Chạy dự đoán từng kỳ quá khứ (chỉ dùng dữ liệu trước ngày quay) để đo độ chính xác thực tế.",
+                        text = "Kiểm thử thuật toán: so sánh dự đoán (chỉ dùng dữ liệu trước mỗi kỳ) với KQ ${profile.shortName} thực tế để xem Đúng / Sai.",
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.mutedText
                     )
@@ -114,22 +123,19 @@ fun HistoricalVerificationCard(
             )
 
             // Preset draw counts
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                listOf(10, 30, 60, 90).forEach { count ->
-                    OutlinedButton(
+                listOf(7, 14, 30, 60, 90).forEach { count ->
+                    FilterChip(
+                        selected = activePresetCount == count,
                         onClick = { onSelectPresetDraws(count) },
                         enabled = !isEvaluating,
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .minimumInteractiveComponentSize()
-                            .testTag("verify_preset_${count}_draws")
-                    ) {
-                        Text("$count kỳ", style = MaterialTheme.typography.labelMedium)
-                    }
+                        label = { Text("$count kỳ", style = MaterialTheme.typography.labelMedium) },
+                        modifier = Modifier.testTag("verify_preset_${count}_draws")
+                    )
                 }
             }
 
@@ -149,7 +155,7 @@ fun HistoricalVerificationCard(
                     Icon(Icons.Default.Verified, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
                 }
-                Text("Chạy Kiểm Chứng Khoảng Thời Gian Này")
+                Text("Chạy Lại Kiểm Chứng")
             }
 
             if (stats != null) {
@@ -157,7 +163,7 @@ fun HistoricalVerificationCard(
 
                 if (stats.stationLabel.isNotBlank()) {
                     Text(
-                        text = "Phạm vi: ${stats.stationLabel} · ${stats.totalDays} kỳ đã kiểm chứng",
+                        text = "Phạm vi: ${stats.stationLabel} · ${stats.totalDays} kỳ đã đối chiếu",
                         style = MaterialTheme.typography.labelMedium,
                         color = colors.goldAccent
                     )
@@ -170,21 +176,21 @@ fun HistoricalVerificationCard(
                     MetricSummaryTile(
                         title = "Top 1",
                         value = "%.1f%%".format(stats.top1Rate),
-                        subtitle = "${stats.top1Hits}/${stats.totalDays} kỳ",
+                        subtitle = "${stats.top1Hits} đúng / ${stats.totalDays - stats.top1Hits} sai",
                         accentColor = colors.neutralBlue,
                         modifier = Modifier.weight(1f)
                     )
                     MetricSummaryTile(
                         title = "Top 3",
                         value = "%.1f%%".format(stats.top3Rate),
-                        subtitle = "${stats.top3Hits}/${stats.totalDays} kỳ",
+                        subtitle = "${stats.top3Hits} đúng / ${stats.totalDays - stats.top3Hits} sai",
                         accentColor = colors.hitGreen,
                         modifier = Modifier.weight(1f)
                     )
                     MetricSummaryTile(
                         title = "Top 5",
                         value = "%.1f%%".format(stats.top5Rate),
-                        subtitle = "${stats.top5Hits}/${stats.totalDays} kỳ",
+                        subtitle = "${stats.top5Hits} đúng / ${stats.totalDays - stats.top5Hits} sai",
                         accentColor = colors.goldAccent,
                         modifier = Modifier.weight(1f)
                     )
@@ -197,7 +203,7 @@ fun HistoricalVerificationCard(
                     MetricSummaryTile(
                         title = "Top 10",
                         value = "%.1f%%".format(stats.top10Rate),
-                        subtitle = "${stats.top10Hits}/${stats.totalDays} kỳ",
+                        subtitle = "${stats.top10Hits} đúng / ${stats.totalDays - stats.top10Hits} sai",
                         accentColor = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.weight(1f)
                     )
@@ -223,7 +229,7 @@ fun HistoricalVerificationCard(
                     HorizontalDivider(color = colors.cardBorder.copy(alpha = 0.45f))
 
                     Text(
-                        text = "Chi tiết từng kỳ đã kiểm chứng (chạm kỳ để xem bảng điểm 00–99):",
+                        text = "Kết quả từng kỳ quay trước (chạm kỳ để mở đủ giải KQXS thực tế):",
                         style = MaterialTheme.typography.labelLarge
                     )
 
@@ -249,15 +255,59 @@ fun HistoricalVerificationCard(
                         }
                     }
 
+                    val rightCount = remember(stats.dayLogs, selectedScope) {
+                        stats.dayLogs.count { day ->
+                            when (selectedScope) {
+                                3 -> day.isWinTop3
+                                5 -> day.isWinTop5
+                                else -> day.isWinTop10
+                            }
+                        }
+                    }
+                    val wrongCount = stats.dayLogs.size - rightCount
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = colors.hitGreenContainer,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = "✓ Đúng Top $selectedScope: $rightCount/${stats.dayLogs.size} kỳ",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = colors.hitGreen,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
+                        }
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = colors.specialCrimsonContainer.copy(alpha = 0.7f),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = "✗ Sai Top $selectedScope: $wrongCount/${stats.dayLogs.size} kỳ",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = colors.specialCrimson,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+
                     val filteredLogs = remember(stats.dayLogs, selectedScope, outcomeFilter) {
                         stats.dayLogs.filter { day ->
+                            val isRight = when (selectedScope) {
+                                3 -> day.isWinTop3
+                                5 -> day.isWinTop5
+                                else -> day.isWinTop10
+                            }
                             when (outcomeFilter) {
                                 VerificationFilter.ALL -> true
-                                VerificationFilter.HITS_ONLY -> when (selectedScope) {
-                                    3 -> day.isWinTop3
-                                    5 -> day.isWinTop5
-                                    else -> day.isWinTop10
-                                }
+                                VerificationFilter.HITS_ONLY -> isRight
+                                VerificationFilter.WRONG_ONLY -> !isRight
                                 VerificationFilter.SPECIAL_ONLY -> when (selectedScope) {
                                     3 -> day.specialHitTop3
                                     5 -> day.actualSpecial != null && day.predictedTop5.any { it.first == day.actualSpecial }
@@ -267,6 +317,9 @@ fun HistoricalVerificationCard(
                         }
                     }
 
+                    val stepBackMap = remember(stats.dayLogs) {
+                        stats.dayLogs.mapIndexed { idx, d -> d.date to (idx + 1) }.toMap()
+                    }
                     val visibleLogs = if (showAllRows) filteredLogs else filteredLogs.take(12)
 
                     if (visibleLogs.isEmpty()) {
@@ -281,10 +334,12 @@ fun HistoricalVerificationCard(
                             visibleLogs.forEach { day ->
                                 VerificationDayRow(
                                     day = day,
+                                    stepBackIndex = stepBackMap[day.date] ?: 1,
                                     profile = profile,
                                     scope = selectedScope,
                                     isSelected = day.date == selectedPredictDate,
-                                    onInspect = { onInspectPastDraw(day.date) }
+                                    onInspectPredict = { onInspectPastDraw(day.date) },
+                                    onOpenKqxs = { onOpenKqxsForDate(day.date) }
                                 )
                             }
                         }
@@ -316,12 +371,16 @@ fun HistoricalVerificationCard(
 @Composable
 private fun VerificationDayRow(
     day: HistoricalVerificationDay,
+    stepBackIndex: Int,
     profile: LotteryProfile,
     scope: Int,
     isSelected: Boolean,
-    onInspect: () -> Unit
+    onInspectPredict: () -> Unit,
+    onOpenKqxs: () -> Unit
 ) {
     val colors = LocalAnalyticsColors.current
+    var expanded by rememberSaveable(day.date.toString()) { mutableStateOf(false) }
+
     val picks = remember(day, scope) {
         when (scope) {
             3 -> day.predictedTop3
@@ -340,16 +399,27 @@ private fun VerificationDayRow(
     val totalNhayInScope = picks.sumOf { day.actualHitCounts[it.first] ?: 0 }
 
     val statusText = when {
-        specialInScope -> "🎯 NỔ ĐB + $totalNhayInScope NHÁY"
-        matchedSet.isNotEmpty() -> "✅ TRÚNG $totalNhayInScope NHÁY"
-        else -> "Trượt"
+        specialInScope -> "🎯 ĐÚNG ĐB + $totalNhayInScope NHÁY"
+        matchedSet.isNotEmpty() -> "✓ ĐÚNG ($totalNhayInScope NHÁY)"
+        else -> "✗ SAI"
     }
     val border = when {
         isSelected -> colors.goldAccent
         specialInScope -> colors.specialCrimson.copy(alpha = 0.7f)
         matchedSet.isNotEmpty() -> colors.hitGreen.copy(alpha = 0.55f)
-        else -> colors.cardBorder
+        else -> colors.specialCrimson.copy(alpha = 0.35f)
     }
+
+    val xsmbGroupLabels = listOf(
+        "special" to "ĐB",
+        "prize1" to "G1",
+        "prize2" to "G2",
+        "prize3" to "G3",
+        "prize4" to "G4",
+        "prize5" to "G5",
+        "prize6" to "G6",
+        "prize7" to "G7"
+    )
 
     Surface(
         shape = MaterialTheme.shapes.small,
@@ -363,7 +433,7 @@ private fun VerificationDayRow(
             .fillMaxWidth()
             .minimumInteractiveComponentSize()
             .testTag("verify_day_row_${day.date}")
-            .clickable { onInspect() }
+            .clickable { expanded = !expanded }
     ) {
         Column(
             verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -379,6 +449,18 @@ private fun VerificationDayRow(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = colors.goldAccent.copy(alpha = 0.16f)
+                        ) {
+                            Text(
+                                text = "Kỳ -$stepBackIndex",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.goldAccent,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
                         Text(
                             text = "${day.date.dayOfWeekVn()}, ${day.date.formatVn()}",
                             style = MaterialTheme.typography.labelLarge,
@@ -397,8 +479,13 @@ private fun VerificationDayRow(
                         }
                     }
                     val spText = day.actualSpecial?.let { profile.formatNumber(it) } ?: "--"
+                    val hitSummary = if (matchedSet.isNotEmpty()) {
+                        " · Trúng: ${matchedSet.sorted().joinToString(", ") { profile.formatNumber(it) }}"
+                    } else {
+                        " · Không trùng Top $scope"
+                    }
                     Text(
-                        text = "ĐB thực tế: $spText · Về ${day.actualUniqueNumbers.size} số",
+                        text = "ĐB thực tế: $spText · Về ${day.actualUniqueNumbers.size} số$hitSummary",
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.mutedText
                     )
@@ -410,7 +497,7 @@ private fun VerificationDayRow(
                         color = when {
                             specialInScope -> colors.specialCrimsonContainer
                             matchedSet.isNotEmpty() -> colors.hitGreenContainer
-                            else -> MaterialTheme.colorScheme.surface
+                            else -> colors.specialCrimsonContainer.copy(alpha = 0.65f)
                         }
                     ) {
                         Text(
@@ -419,7 +506,7 @@ private fun VerificationDayRow(
                             color = when {
                                 specialInScope -> colors.specialCrimson
                                 matchedSet.isNotEmpty() -> colors.hitGreen
-                                else -> colors.mutedText
+                                else -> colors.specialCrimson
                             },
                             fontWeight = FontWeight.SemiBold,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
@@ -427,10 +514,10 @@ private fun VerificationDayRow(
                     }
                     Spacer(Modifier.width(4.dp))
                     Icon(
-                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                        contentDescription = "Xem chi tiết kỳ này",
+                        imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = if (expanded) "Thu gọn kết quả thực tế" else "Mở kết quả thực tế kỳ này",
                         tint = colors.mutedText,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(20.dp)
                     )
                 }
             }
@@ -463,7 +550,7 @@ private fun VerificationDayRow(
                             isSp -> " ★ĐB"
                             nhay > 1 -> " ×$nhay"
                             isHit -> " ✓"
-                            else -> ""
+                            else -> " ✗"
                         }
                         Text(
                             text = "#${idx + 1} ${profile.formatNumber(num)}$suffix",
@@ -476,6 +563,142 @@ private fun VerificationDayRow(
                             fontWeight = if (isHit) FontWeight.Bold else FontWeight.Medium,
                             modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
                         )
+                    }
+                }
+            }
+
+            AnimatedVisibility(visible = expanded) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(top = 4.dp)
+                ) {
+                    HorizontalDivider(color = colors.cardBorder.copy(alpha = 0.5f))
+                    Text(
+                        text = "Kết quả thực tế kỳ ${day.date.formatVn()} (màu xanh = số dự đoán trúng):",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.neutralBlue,
+                        fontWeight = FontWeight.SemiBold
+                    )
+
+                    val predictedSet = remember(picks) { picks.map { it.first }.toSet() }
+                    if (day.actualPrizeMap.isNotEmpty()) {
+                        val orderedEntries = if (profile.id == "xsmb") {
+                            xsmbGroupLabels.mapNotNull { (k, label) ->
+                                day.actualPrizeMap[k]?.takeIf { it.isNotEmpty() }?.let { label to ((k == "special") to it) }
+                            }
+                        } else {
+                            day.actualPrizeMap.entries.map { (k, vals) ->
+                                k to (k.contains("đặc biệt", ignoreCase = true) to vals)
+                            }
+                        }
+
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            orderedEntries.forEach { (label, pair) ->
+                                val (isSpecialGroup, values) = pair
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = label,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (isSpecialGroup) colors.specialCrimson else colors.mutedText,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.width(36.dp)
+                                    )
+                                    FlowRow(
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        values.forEach { str ->
+                                            val nVal = str.toIntOrNull()
+                                            val matched = nVal != null && nVal in predictedSet
+                                            Surface(
+                                                shape = MaterialTheme.shapes.small,
+                                                color = when {
+                                                    isSpecialGroup && matched -> colors.specialCrimsonContainer
+                                                    matched -> colors.hitGreenContainer
+                                                    isSpecialGroup -> colors.specialCrimsonContainer.copy(alpha = 0.55f)
+                                                    else -> MaterialTheme.colorScheme.surface
+                                                },
+                                                border = if (matched || isSpecialGroup) {
+                                                    BorderStroke(1.dp, if (isSpecialGroup) colors.specialCrimson else colors.hitGreen)
+                                                } else {
+                                                    null
+                                                }
+                                            ) {
+                                                Text(
+                                                    text = str,
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = when {
+                                                        isSpecialGroup -> colors.specialCrimson
+                                                        matched -> colors.hitGreen
+                                                        else -> MaterialTheme.colorScheme.onSurface
+                                                    },
+                                                    fontWeight = if (matched || isSpecialGroup) FontWeight.Bold else FontWeight.Normal,
+                                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            day.actualUniqueNumbers.sorted().forEach { num ->
+                                val isSp = day.actualSpecial == num
+                                val matched = num in predictedSet
+                                Surface(
+                                    shape = MaterialTheme.shapes.small,
+                                    color = when {
+                                        isSp -> colors.specialCrimsonContainer
+                                        matched -> colors.hitGreenContainer
+                                        else -> MaterialTheme.colorScheme.surface
+                                    }
+                                ) {
+                                    Text(
+                                        text = profile.formatNumber(num),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = when {
+                                            isSp -> colors.specialCrimson
+                                            matched -> colors.hitGreen
+                                            else -> MaterialTheme.colorScheme.onSurface
+                                        },
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        OutlinedButton(
+                            onClick = onInspectPredict,
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier.testTag("verify_open_predict_${day.date}")
+                        ) {
+                            Text("Bảng điểm 00–99", style = MaterialTheme.typography.labelMedium)
+                        }
+                        TextButton(
+                            onClick = onOpenKqxs,
+                            modifier = Modifier.testTag("verify_open_kqxs_${day.date}")
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text("Mở KQXS", style = MaterialTheme.typography.labelMedium)
+                        }
                     }
                 }
             }

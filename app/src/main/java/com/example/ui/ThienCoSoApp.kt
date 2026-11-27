@@ -165,6 +165,8 @@ fun ThienCoSoApp(viewModel: MainViewModel = viewModel()) {
                                 onToggleStationOnlyHistory = viewModel::toggleStationOnlyHistory,
                                 onSelectScheduleDay = viewModel::selectScheduleDay,
                                 onFetchSevenDays = { viewModel.fetchAndCompareLast7Days(userInitiated = true) },
+                                onSelectDashboardWindow = viewModel::selectXsmbDashboardWindow,
+                                onUpdateXsmbData = viewModel::updateAndRefreshXsmbData,
                                 onOpenKqxsForDate = { date ->
                                     viewModel.selectKqxsStationFilter(XsmbStation.ALL)
                                     viewModel.selectKqxsDate(date)

@@ -4,6 +4,11 @@ import android.content.Context
 import android.util.JsonReader
 import android.util.JsonToken
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -36,6 +41,7 @@ class LotteryRepository(private val context: Context) {
         get() = File(context.filesDir, "data").apply { if (!exists()) mkdirs() }
 
     private val drawCache = mutableMapOf<String, List<LotteryDraw>>()
+    private val xsmbFileMutex = Mutex()
 
     suspend fun ensureBundledDataSeeded() = withContext(Dispatchers.IO) {
         val assetFiles = try {
@@ -67,7 +73,7 @@ class LotteryRepository(private val context: Context) {
             val parsed = if (profile.isJsonl) {
                 parseJsonlFile(file, profile)
             } else {
-                parseXsmbJsonFile(file)
+                xsmbFileMutex.withLock { parseXsmbJsonFile(file) }
             }
             val sorted = parsed.sortedWith(compareBy<LotteryDraw> { it.date }.thenBy { it.drawId })
             drawCache[profile.id] = sorted
@@ -88,44 +94,58 @@ class LotteryRepository(private val context: Context) {
         val beforeCount = beforeDraws.size
         var githubError: String? = null
 
-        try {
-            val request = Request.Builder()
-                .url(url)
-                .header("User-Agent", "ThienCoSo-Android/6.2.0")
-                .build()
+        val urlsToTry = if (customUrl.isNullOrBlank() && profile.id == "xsmb") {
+            listOf(
+                "https://raw.githubusercontent.com/khiemdoan/vietnam-lottery-xsmb-analysis/refs/heads/main/data/xsmb-2-digits.json",
+                url
+            ).distinct()
+        } else {
+            listOf(url)
+        }
 
-            val bodyText = client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    githubError = "Máy chủ trả về HTTP ${response.code}"
-                    ""
-                } else {
-                    response.body?.string().orEmpty()
-                }
-            }
+        for (candidateUrl in urlsToTry) {
+            try {
+                val request = Request.Builder()
+                    .url(candidateUrl)
+                    .header("User-Agent", "ThienCoSo-Android/6.2.0")
+                    .build()
 
-            if (bodyText.isNotBlank()) {
-                val tempFile = File(dataDir, "${profile.fileName}.tmp")
-                tempFile.writeText(bodyText, StandardCharsets.UTF_8)
-                val remoteDraws = if (profile.isJsonl) {
-                    parseJsonlFile(tempFile, profile)
-                } else {
-                    parseXsmbJsonFile(tempFile)
-                }
-                if (remoteDraws.isNotEmpty()) {
-                    if (profile.isJsonl) {
-                        mergeJsonlFiles(existingFile = targetFile, incomingFile = tempFile)
+                val bodyText = client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        githubError = "Máy chủ trả về HTTP ${response.code}"
+                        ""
                     } else {
-                        mergeXsmbJsonFiles(existingFile = targetFile, incomingFile = tempFile)
+                        response.body?.string().orEmpty()
                     }
-                } else if (githubError == null) {
-                    githubError = "Nguồn từ xa không có bản ghi hợp lệ."
                 }
-                tempFile.delete()
-            } else if (githubError == null) {
-                githubError = "Dữ liệu tải về trống."
+
+                if (bodyText.isNotBlank()) {
+                    val tempFile = File(dataDir, "${profile.fileName}.tmp")
+                    tempFile.writeText(bodyText, StandardCharsets.UTF_8)
+                    val remoteDraws = if (profile.isJsonl) {
+                        parseJsonlFile(tempFile, profile)
+                    } else {
+                        parseXsmbJsonFile(tempFile)
+                    }
+                    if (remoteDraws.isNotEmpty()) {
+                        if (profile.isJsonl) {
+                            mergeJsonlFiles(existingFile = targetFile, incomingFile = tempFile)
+                        } else {
+                            xsmbFileMutex.withLock {
+                                mergeXsmbJsonFiles(existingFile = targetFile, incomingFile = tempFile)
+                            }
+                        }
+                        githubError = null
+                    } else if (githubError == null) {
+                        githubError = "Nguồn từ xa không có bản ghi hợp lệ."
+                    }
+                    tempFile.delete()
+                } else if (githubError == null) {
+                    githubError = "Dữ liệu tải về trống."
+                }
+            } catch (e: Exception) {
+                githubError = e.localizedMessage ?: "Không thể kết nối máy chủ đồng bộ"
             }
-        } catch (e: Exception) {
-            githubError = e.localizedMessage ?: "Không thể kết nối máy chủ đồng bộ"
         }
 
         // For XSMB, crawl missing recent draws up to current Vietnam real-time date
@@ -163,7 +183,7 @@ class LotteryRepository(private val context: Context) {
         }
     }
 
-    private fun crawlMissingRecentXsmbDraws(targetFile: File, latestLocalDate: LocalDate?): Int {
+    private suspend fun crawlMissingRecentXsmbDraws(targetFile: File, latestLocalDate: LocalDate?): Int {
         val nowVn = java.time.ZonedDateTime.now(VN_ZONE_ID)
         val todayVn = nowVn.toLocalDate()
         val endDate = if (nowVn.toLocalTime().isBefore(java.time.LocalTime.of(18, 30))) {
@@ -178,20 +198,28 @@ class LotteryRepository(private val context: Context) {
         }
         if (startDate.isAfter(endDate)) return 0
 
+        val datesToFetch = generateSequence(startDate) { prev ->
+            val next = prev.plusDays(1)
+            if (next.isAfter(endDate)) null else next
+        }.toList()
+
         val fetchedObjects = mutableListOf<JSONObject>()
-        var d = startDate
-        while (!d.isAfter(endDate)) {
-            fetchXsmbDayFromXoso(d)?.let { fetchedObjects.add(it) }
-            d = d.plusDays(1)
+        for (batch in datesToFetch.chunked(6)) {
+            val batchResults = coroutineScope {
+                batch.map { day -> async { fetchXsmbDayFromXoso(day) } }.awaitAll()
+            }
+            batchResults.filterNotNull().forEach { fetchedObjects.add(it) }
         }
         if (fetchedObjects.isEmpty()) return 0
 
         val arr = JSONArray()
         fetchedObjects.forEach { arr.put(it) }
-        val tempFile = File(dataDir, "xsmb-live.tmp")
-        tempFile.writeText(arr.toString(), StandardCharsets.UTF_8)
-        mergeXsmbJsonFiles(existingFile = targetFile, incomingFile = tempFile)
-        tempFile.delete()
+        xsmbFileMutex.withLock {
+            val tempFile = File(dataDir, "xsmb-live.tmp")
+            tempFile.writeText(arr.toString(), StandardCharsets.UTF_8)
+            mergeXsmbJsonFiles(existingFile = targetFile, incomingFile = tempFile)
+            tempFile.delete()
+        }
         return fetchedObjects.size
     }
 
@@ -227,10 +255,14 @@ class LotteryRepository(private val context: Context) {
         var totalParsed = 0
 
         for ((cssClass, jsonKeys) in groups) {
-            val regex = Regex("""class\s*=\s*["']?${Regex.escape(cssClass)}["']?[^>]*>([^<]+)""", RegexOption.IGNORE_CASE)
+            val regex = Regex(
+                """class\s*=\s*["'][^"']*\b${Regex.escape(cssClass)}\b[^"']*["'][^>]*>(.*?)</(?:span|td|div|p)>""",
+                setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+            )
             val nums = regex.findAll(html)
                 .mapNotNull { m ->
-                    val digits = m.groupValues[1].filter { it.isDigit() }
+                    val plain = m.groupValues[1].replace(Regex("<[^>]+>"), "")
+                    val digits = plain.filter { it.isDigit() }
                     extractLastTwoDigits(digits)
                 }
                 .toList()
@@ -249,10 +281,12 @@ class LotteryRepository(private val context: Context) {
         ensureBundledDataSeeded()
         val targetFile = File(dataDir, LotteryProfiles.XSMB.fileName)
         if (incomingArray.length() > 0) {
-            val tempFile = File(dataDir, "xsmb-7days.tmp")
-            tempFile.writeText(incomingArray.toString(), StandardCharsets.UTF_8)
-            mergeXsmbJsonFiles(existingFile = targetFile, incomingFile = tempFile)
-            tempFile.delete()
+            xsmbFileMutex.withLock {
+                val tempFile = File(dataDir, "xsmb-7days.tmp")
+                tempFile.writeText(incomingArray.toString(), StandardCharsets.UTF_8)
+                mergeXsmbJsonFiles(existingFile = targetFile, incomingFile = tempFile)
+                tempFile.delete()
+            }
         }
         loadDraws(LotteryProfiles.XSMB, forceReload = true)
     }

@@ -159,20 +159,20 @@ class XsmbPublicApiService(
 
         // Typical xskt RSS description:
         // "ĐB: 12345 1: 23456 2: 34567 - 45678 3: ... 7: 12 - 34 - 56 - 78"
-        val markers = listOf(
-            "ĐB:" to "special",
-            "1:" to "prize1",
-            "2:" to "prize2",
-            "3:" to "prize3",
-            "4:" to "prize4",
-            "5:" to "prize5",
-            "6:" to "prize6",
-            "7:" to "prize7"
+        val markerPatterns = listOf(
+            Regex("""(?i)(?:^|\s)(?:ĐB|DB|G\.?ĐB)\s*:""") to "special",
+            Regex("""(?i)(?:^|\s)(?:G\.?)?1\s*:""") to "prize1",
+            Regex("""(?i)(?:^|\s)(?:G\.?)?2\s*:""") to "prize2",
+            Regex("""(?i)(?:^|\s)(?:G\.?)?3\s*:""") to "prize3",
+            Regex("""(?i)(?:^|\s)(?:G\.?)?4\s*:""") to "prize4",
+            Regex("""(?i)(?:^|\s)(?:G\.?)?5\s*:""") to "prize5",
+            Regex("""(?i)(?:^|\s)(?:G\.?)?6\s*:""") to "prize6",
+            Regex("""(?i)(?:^|\s)(?:G\.?)?7\s*:""") to "prize7"
         )
 
-        val positions = markers.mapNotNull { (token, key) ->
-            val idx = cleaned.indexOf(token)
-            if (idx >= 0) Triple(idx, token.length, key) else null
+        val positions = markerPatterns.mapNotNull { (pattern, key) ->
+            val m = pattern.find(cleaned)
+            if (m != null) Triple(m.range.first, m.range.last + 1, key) else null
         }.sortedBy { it.first }
 
         if (positions.isEmpty()) return null
@@ -182,8 +182,7 @@ class XsmbPublicApiService(
         var special: Int? = null
 
         for (i in positions.indices) {
-            val (startIdx, tokLen, groupKey) = positions[i]
-            val contentStart = startIdx + tokLen
+            val (_, contentStart, groupKey) = positions[i]
             val contentEnd = if (i + 1 < positions.size) positions[i + 1].first else cleaned.length
             val segment = cleaned.substring(contentStart, contentEnd)
             val tokens = Regex("""\d{2,5}""").findAll(segment).map { it.value }.toList()
@@ -313,9 +312,13 @@ class XsmbPublicApiService(
         var special: Int? = null
 
         for ((cssClass, groupKey) in groups) {
-            val regex = Regex("""class\s*=\s*["']?${Regex.escape(cssClass)}["']?[^>]*>([^<]+)""", RegexOption.IGNORE_CASE)
+            val regex = Regex(
+                """class\s*=\s*["'][^"']*\b${Regex.escape(cssClass)}\b[^"']*["'][^>]*>(.*?)</(?:span|td|div|p)>""",
+                setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+            )
             val nums = regex.findAll(html).mapNotNull { m ->
-                extractLastTwoDigits(m.groupValues[1].filter { it.isDigit() })
+                val plain = m.groupValues[1].replace(Regex("<[^>]+>"), "")
+                extractLastTwoDigits(plain.filter { it.isDigit() })
             }.toList()
             for (n in nums) {
                 allNumbers.add(n)

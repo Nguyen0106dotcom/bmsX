@@ -454,7 +454,8 @@ data class HistoricalVerificationDay(
     val specialHitTop3: Boolean,
     val specialHitTop10: Boolean,
     val isProfileWin: Boolean,
-    val prizeDetail: String
+    val prizeDetail: String,
+    val actualPrizeMap: Map<String, List<String>> = emptyMap()
 ) {
     val predictedTop3: List<Pair<Int, Double>> get() = predictedTop10.take(3)
     val predictedTop5: List<Pair<Int, Double>> get() = predictedTop10.take(5)
@@ -648,4 +649,32 @@ data class ThirtyDayAccuracyChartData(
     val top10Hits: Int
 )
 
+data class XsmbStationAccuracyRow(
+    val station: XsmbStation,
+    val totalDraws: Int,
+    val top3Hits: Int,
+    val top5Hits: Int,
+    val top10Hits: Int,
+    val specialTop10Hits: Int
+) {
+    val top3AccuracyPct: Double get() = if (totalDraws > 0) top3Hits * 100.0 / totalDraws else 0.0
+    val top5AccuracyPct: Double get() = if (totalDraws > 0) top5Hits * 100.0 / totalDraws else 0.0
+    val top10AccuracyPct: Double get() = if (totalDraws > 0) top10Hits * 100.0 / totalDraws else 0.0
+}
 
+data class XsmbDashboardSummary(
+    val stats: CombinedPerformanceStats,
+    val windowDrawsRequested: Int,
+    val top1AccuracyPct: Double,
+    val top3AccuracyPct: Double,
+    val top5AccuracyPct: Double,
+    val top10AccuracyPct: Double,
+    val specialTop10AccuracyPct: Double,
+    val avgNhayTop3: Double,
+    val recent7Top3AccuracyPct: Double,
+    val recent7Top5AccuracyPct: Double,
+    val recent7Top10AccuracyPct: Double,
+    val longestTop3WinStreak: Int,
+    val currentTop3WinStreak: Int,
+    val stationBreakdowns: List<XsmbStationAccuracyRow>
+)

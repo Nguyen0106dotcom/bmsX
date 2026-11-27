@@ -25,8 +25,10 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -53,6 +55,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -69,6 +72,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.data.LotteryProfile
+import com.example.data.LotteryProfiles
 import com.example.data.NumberDetailInfo
 import com.example.data.PredictionResult
 import com.example.data.SortOrder
@@ -81,6 +85,7 @@ import com.example.ui.components.Last7DaysComparisonCard
 import com.example.ui.components.MetricSummaryTile
 import com.example.ui.components.ProfileSelectorChip
 import com.example.ui.components.ThirtyDayAccuracyChartCard
+import com.example.ui.components.XsmbPerformanceDashboardCard
 import com.example.ui.components.XsmbStationScheduleCard
 import com.example.ui.components.dayOfWeekVn
 import com.example.ui.components.formatVn
@@ -112,11 +117,13 @@ fun PredictScreen(
     onToggleStationOnlyHistory: (Boolean) -> Unit,
     onSelectScheduleDay: (StationDailyPrediction) -> Unit,
     onFetchSevenDays: () -> Unit,
+    onSelectDashboardWindow: (Int) -> Unit,
+    onUpdateXsmbData: () -> Unit,
     onOpenKqxsForDate: (LocalDate) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val colors = LocalAnalyticsColors.current
-    var showBacktestPanel by remember { mutableStateOf(false) }
+    var showBacktestPanel by rememberSaveable { mutableStateOf(true) }
     val isXsmb = state.selectedProfile.id == "xsmb"
 
     Box(
@@ -215,15 +222,26 @@ fun PredictScreen(
                             label = { Text("Kỳ tới", style = MaterialTheme.typography.bodySmall) },
                             modifier = Modifier.testTag("quick_jump_next")
                         )
+                        val pastPool = remember(state.draws, state.selectedProfile.id, state.selectedXsmbStation) {
+                            if (isXsmb && state.selectedXsmbStation != XsmbStation.ALL) {
+                                state.draws.filter { state.selectedXsmbStation.matchesDate(it.date) }
+                            } else {
+                                state.draws
+                            }
+                        }
                         listOf(
                             0 to "Gần nhất có KQ",
                             1 to "1 kỳ trước",
                             3 to "3 kỳ trước",
                             7 to "7 kỳ trước",
+                            14 to "14 kỳ trước",
                             30 to "30 kỳ trước"
                         ).forEach { (offset, label) ->
+                            val offsetDate = if (pastPool.isNotEmpty()) {
+                                pastPool[(pastPool.lastIndex - offset).coerceIn(0, pastPool.lastIndex)].date
+                            } else null
                             FilterChip(
-                                selected = false,
+                                selected = offsetDate != null && state.predictTargetDate == offsetDate,
                                 onClick = { onJumpToPastDraw(offset) },
                                 label = { Text(label, style = MaterialTheme.typography.bodySmall) },
                                 modifier = Modifier.testTag("quick_jump_past_$offset")
@@ -283,33 +301,61 @@ fun PredictScreen(
                 }
             }
 
-            // 3. Historical Algorithm Verification Card (Collapsible)
-            item {
-                AnimatedVisibility(visible = showBacktestPanel) {
-                    HistoricalVerificationCard(
-                        profile = state.selectedProfile,
-                        fromDate = state.combinedFromDate,
-                        toDate = state.combinedToDate,
-                        isEvaluating = state.isEvaluatingCombined,
-                        stats = state.combinedPerformance,
-                        selectedPredictDate = state.predictTargetDate,
-                        onSelectPresetDraws = onSelectVerifyPresetDraws,
-                        onRunVerification = onRunCombinedBacktest,
-                        onInspectPastDraw = onDatePicked
-                    )
-                }
-            }
-
-            // 4. Top 3 Golden Picks & Win Evaluation
+            // 3. Top 3 Golden Picks & Win Evaluation for current targetDate
             val prediction = state.predictionResult
             if (prediction != null) {
                 item {
                     TopPicksShowcaseCard(prediction = prediction, profile = state.selectedProfile)
                 }
 
-                if (prediction.winEvaluation != null) {
+                if (prediction.winEvaluation != null && prediction.actualDraw != null) {
                     item {
-                        WinComparisonBanner(prediction = prediction)
+                        WinComparisonBanner(
+                            prediction = prediction,
+                            profile = state.selectedProfile,
+                            onOpenKqxsForDate = { onOpenKqxsForDate(prediction.targetDate) }
+                        )
+                    }
+                }
+
+                // 3.5 Dedicated XSMB Accuracy Percentage Performance Dashboard
+                item {
+                    XsmbPerformanceDashboardCard(
+                        dashboard = state.xsmbDashboard,
+                        isLoading = state.isLoadingXsmbDashboard,
+                        isSyncing = state.isSyncing,
+                        activeProfileId = state.selectedProfile.id,
+                        activeProfileShortName = state.selectedProfile.shortName,
+                        targetDate = state.predictTargetDate,
+                        selectedWindowDraws = state.xsmbDashboardWindow,
+                        selectedStation = state.selectedXsmbStation,
+                        onSwitchToXsmb = { onSelectProfile(LotteryProfiles.XSMB) },
+                        onSelectWindowDraws = onSelectDashboardWindow,
+                        onSelectStation = { station ->
+                            if (!isXsmb) onSelectProfile(LotteryProfiles.XSMB)
+                            onSelectXsmbStation(station)
+                        },
+                        onUpdateXsmbData = onUpdateXsmbData
+                    )
+                }
+
+                // 4. Predictions & actual outcomes of previous draws prior to current targetDate
+                item {
+                    AnimatedVisibility(visible = showBacktestPanel) {
+                        HistoricalVerificationCard(
+                            profile = state.selectedProfile,
+                            targetDate = state.predictTargetDate,
+                            fromDate = state.combinedFromDate,
+                            toDate = state.combinedToDate,
+                            activePresetCount = state.verifyPresetDrawCount,
+                            isEvaluating = state.isEvaluatingCombined,
+                            stats = state.combinedPerformance,
+                            selectedPredictDate = state.predictTargetDate,
+                            onSelectPresetDraws = onSelectVerifyPresetDraws,
+                            onRunVerification = onRunCombinedBacktest,
+                            onInspectPastDraw = onDatePicked,
+                            onOpenKqxsForDate = onOpenKqxsForDate
+                        )
                     }
                 }
 
@@ -722,41 +768,281 @@ private fun TopPicksShowcaseCard(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun WinComparisonBanner(prediction: PredictionResult) {
+private fun WinComparisonBanner(
+    prediction: PredictionResult,
+    profile: LotteryProfile,
+    onOpenKqxsForDate: () -> Unit
+) {
     val eval = prediction.winEvaluation ?: return
+    val actual = prediction.actualDraw ?: return
     val colors = LocalAnalyticsColors.current
-    val bg = if (eval.isWin) colors.hitGreenContainer else MaterialTheme.colorScheme.surfaceVariant
-    val border = if (eval.isWin) colors.hitGreen else colors.cardBorder
-    val fg = if (eval.isWin) colors.hitGreen else colors.mutedText
+    val bg = if (eval.isWin) colors.hitGreenContainer.copy(alpha = 0.45f) else MaterialTheme.colorScheme.surface
+    val border = if (eval.isWin) colors.hitGreen else colors.specialCrimson.copy(alpha = 0.55f)
+    val fg = if (eval.isWin) colors.hitGreen else colors.specialCrimson
+
+    val top10 = remember(prediction) { prediction.rankedNumbers.take(10) }
+    val hitCounts = remember(actual) {
+        val counts = HashMap<Int, Int>()
+        actual.allNumbers.forEach { n -> counts[n] = (counts[n] ?: 0) + 1 }
+        counts
+    }
+    val top3Hits = remember(top10, actual) { top10.take(3).count { it.first in actual.uniqueNumbers } }
+    val top5Hits = remember(top10, actual) { top10.take(5).count { it.first in actual.uniqueNumbers } }
+    val top10Hits = remember(top10, actual) { top10.count { it.first in actual.uniqueNumbers } }
+    val top10Set = remember(top10) { top10.map { it.first }.toSet() }
+
+    val xsmbGroupLabels = listOf(
+        "special" to "ĐB",
+        "prize1" to "G1",
+        "prize2" to "G2",
+        "prize3" to "G3",
+        "prize4" to "G4",
+        "prize5" to "G5",
+        "prize6" to "G6",
+        "prize7" to "G7"
+    )
 
     Surface(
-        shape = MaterialTheme.shapes.small,
+        shape = MaterialTheme.shapes.medium,
         color = bg,
-        border = BorderStroke(1.dp, border),
-        modifier = Modifier.fillMaxWidth()
+        border = BorderStroke(1.2.dp, border),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("past_draw_comparison_card")
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(12.dp)
+        Column(
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.padding(14.dp)
         ) {
-            Icon(
-                imageVector = if (eval.isWin) Icons.Default.CheckCircle else Icons.Default.Star,
-                contentDescription = null,
-                tint = fg
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        imageVector = if (eval.isWin) Icons.Default.CheckCircle else Icons.Default.Cancel,
+                        contentDescription = if (eval.isWin) "Dự đoán đúng" else "Dự đoán sai",
+                        tint = fg,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column {
+                        val stationTag = if (profile.id == "xsmb") {
+                            " · ${XsmbStation.forDate(prediction.targetDate).displayName}"
+                        } else ""
+                        Text(
+                            text = "Đối chiếu KQ thực tế ${prediction.targetDate.formatVn()}$stationTag",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.mutedText
+                        )
+                        Text(
+                            text = eval.prizeDetail,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = fg,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                Surface(
+                    shape = MaterialTheme.shapes.small,
+                    color = if (eval.isWin) colors.hitGreenContainer else colors.specialCrimsonContainer
+                ) {
+                    Text(
+                        text = if (eval.isWin) "✓ ĐÚNG" else "✗ SAI",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = fg,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                    )
+                }
+            }
+
+            // Accuracy summary strip across Top 3 / 5 / 10
+            Text(
+                text = "Độ khớp kỳ này: Top 3 trúng $top3Hits/3 · Top 5 trúng $top5Hits/5 · Top 10 trúng $top10Hits/10 số · ĐB thực tế: ${actual.specialNumber?.let { profile.formatNumber(it) } ?: "--"}",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurface
             )
-            Spacer(Modifier.width(10.dp))
-            Column {
+
+            // Predicted Top 10 picks with right/wrong markers
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
-                    text = "Đối chiếu KQXS thực tế ngày ${prediction.targetDate.formatVn()}",
-                    style = MaterialTheme.typography.bodySmall,
+                    text = "Top 10 dự đoán của kỳ ${prediction.targetDate.formatVn()}:",
+                    style = MaterialTheme.typography.labelSmall,
                     color = colors.mutedText
                 )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    top10.forEachIndexed { idx, (num, _) ->
+                        val isSp = actual.specialNumber != null && num == actual.specialNumber
+                        val nhay = hitCounts[num] ?: 0
+                        val isHit = nhay > 0
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = when {
+                                isSp -> colors.specialCrimsonContainer
+                                isHit -> colors.hitGreenContainer
+                                else -> MaterialTheme.colorScheme.surfaceVariant
+                            },
+                            border = BorderStroke(
+                                if (isSp || isHit) 1.5.dp else 1.dp,
+                                when {
+                                    isSp -> colors.specialCrimson
+                                    isHit -> colors.hitGreen
+                                    else -> colors.cardBorder
+                                }
+                            )
+                        ) {
+                            val suffix = when {
+                                isSp -> " ★ĐB"
+                                nhay > 1 -> " ×$nhay"
+                                isHit -> " ✓"
+                                else -> " ✗"
+                            }
+                            Text(
+                                text = "#${idx + 1} ${profile.formatNumber(num)}$suffix",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = when {
+                                    isSp -> colors.specialCrimson
+                                    isHit -> colors.hitGreen
+                                    else -> colors.mutedText
+                                },
+                                fontWeight = if (isHit) FontWeight.Bold else FontWeight.Normal,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            HorizontalDivider(color = colors.cardBorder.copy(alpha = 0.5f))
+
+            // Actual Draw Outcomes (Full Prize Table)
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
-                    text = eval.prizeDetail,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = fg
+                    text = "Kết quả thực tế đã quay ngày ${prediction.targetDate.formatVn()} (Xanh = trúng trong Top 10):",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.neutralBlue,
+                    fontWeight = FontWeight.SemiBold
                 )
+
+                if (actual.prizeMap.isNotEmpty()) {
+                    val orderedEntries = if (profile.id == "xsmb") {
+                        xsmbGroupLabels.mapNotNull { (k, title) ->
+                            actual.prizeMap[k]?.takeIf { it.isNotEmpty() }?.let { title to ((k == "special") to it) }
+                        }
+                    } else {
+                        actual.prizeMap.entries.map { (k, vals) ->
+                            k to (k.contains("đặc biệt", ignoreCase = true) to vals)
+                        }
+                    }
+                    orderedEntries.forEach { (title, pair) ->
+                        val (isSpecialGroup, values) = pair
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = title,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (isSpecialGroup) colors.specialCrimson else colors.mutedText,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.width(36.dp)
+                            )
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                values.forEach { str ->
+                                    val nVal = str.toIntOrNull()
+                                    val matched = nVal != null && nVal in top10Set
+                                    Surface(
+                                        shape = MaterialTheme.shapes.small,
+                                        color = when {
+                                            isSpecialGroup && matched -> colors.specialCrimsonContainer
+                                            matched -> colors.hitGreenContainer
+                                            isSpecialGroup -> colors.specialCrimsonContainer.copy(alpha = 0.55f)
+                                            else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                                        },
+                                        border = if (matched || isSpecialGroup) {
+                                            BorderStroke(1.dp, if (isSpecialGroup) colors.specialCrimson else colors.hitGreen)
+                                        } else null
+                                    ) {
+                                        Text(
+                                            text = str,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = when {
+                                                isSpecialGroup -> colors.specialCrimson
+                                                matched -> colors.hitGreen
+                                                else -> MaterialTheme.colorScheme.onSurface
+                                            },
+                                            fontWeight = if (matched || isSpecialGroup) FontWeight.Bold else FontWeight.Normal,
+                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        actual.uniqueNumbers.sorted().forEach { num ->
+                            val isSp = actual.specialNumber == num
+                            val matched = num in top10Set
+                            Surface(
+                                shape = MaterialTheme.shapes.small,
+                                color = when {
+                                    isSp -> colors.specialCrimsonContainer
+                                    matched -> colors.hitGreenContainer
+                                    else -> MaterialTheme.colorScheme.surfaceVariant
+                                }
+                            ) {
+                                Text(
+                                    text = profile.formatNumber(num),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = when {
+                                        isSp -> colors.specialCrimson
+                                        matched -> colors.hitGreen
+                                        else -> MaterialTheme.colorScheme.onSurface
+                                    },
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Row(
+                horizontalArrangement = Arrangement.End,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                OutlinedButton(
+                    onClick = onOpenKqxsForDate,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier.testTag("past_draw_open_kqxs_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Mở bảng KQXS & Thống kê", style = MaterialTheme.typography.labelMedium)
+                }
             }
         }
     }

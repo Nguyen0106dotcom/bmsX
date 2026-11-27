@@ -30,6 +30,7 @@ import com.example.data.SyncResult
 import com.example.data.ThirtyDayAccuracyChartData
 import com.example.data.TrialBetType
 import com.example.data.VN_ZONE_ID
+import com.example.data.XsmbDashboardSummary
 import com.example.data.XsmbPublicApiService
 import com.example.data.XsmbStation
 import com.example.engine.AnalyticsEngine
@@ -87,6 +88,10 @@ data class MainUiState(
     val sevenDayComparison: SevenDayComparisonSummary? = null,
     val isLoadingAccuracyChart: Boolean = false,
     val thirtyDayAccuracyChart: ThirtyDayAccuracyChartData? = null,
+    val verifyPresetDrawCount: Int = 30,
+    val isLoadingXsmbDashboard: Boolean = false,
+    val xsmbDashboardWindow: Int = 30,
+    val xsmbDashboard: XsmbDashboardSummary? = null,
 
     // Algorithms & Optimizer & AI
     val algorithms: List<LotteryAlgorithm> = emptyList(),
@@ -175,9 +180,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             loadProfileData(profile, runInitialPrediction = true)
             refreshAllProfileMetadata()
             refreshStationSchedulePredictions()
+            if (profile.id != LotteryProfiles.XSMB.id) {
+                refreshXsmbDashboard()
+            }
             fetchAndCompareLast7Days(userInitiated = false)
-            // Silent background sync on startup to fetch up-to-date results for next-draw prediction
-            syncProfile(profile, silent = true)
+            // Silent background sync on startup to fetch up-to-date XSMB results
+            syncProfile(LotteryProfiles.XSMB, silent = true)
         }
     }
 
@@ -343,6 +351,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setPredictTargetDate(date: LocalDate) {
         _uiState.update { it.copy(predictTargetDate = date) }
         runPrediction()
+        refreshVerificationAndChart()
     }
 
     fun predictNextRealTimeDraw(syncFirst: Boolean = false) {
@@ -360,6 +369,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             syncProfile(state.selectedProfile, silent = false)
         } else {
             runPrediction()
+            refreshVerificationAndChart()
         }
     }
 
@@ -407,29 +417,142 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refreshThirtyDayAccuracyChart() {
+        refreshVerificationAndChart(_uiState.value.verifyPresetDrawCount)
+    }
+
+    private fun refreshVerificationAndChart(drawCount: Int = _uiState.value.verifyPresetDrawCount) {
         val state = _uiState.value
         if (state.draws.size < 2) return
-        _uiState.update { it.copy(isLoadingAccuracyChart = true) }
+        val activeStation = if (state.selectedProfile.id == "xsmb") state.selectedXsmbStation else XsmbStation.ALL
+        val stationPool = if (state.selectedProfile.id == "xsmb" && activeStation != XsmbStation.ALL) {
+            state.draws.filter { activeStation.matchesDate(it.date) }
+        } else {
+            state.draws
+        }
+        if (stationPool.size < 2) return
+
+        val beforeTargetPool = stationPool.filter { it.date.isBefore(state.predictTargetDate) }
+            .ifEmpty { stationPool }
+        val slice = beforeTargetPool.takeLast(drawCount.coerceIn(1, beforeTargetPool.size))
+        val from = slice.first().date
+        val to = slice.last().date
+
+        _uiState.update {
+            it.copy(
+                isLoadingAccuracyChart = true,
+                isEvaluatingCombined = true,
+                isLoadingXsmbDashboard = if (state.selectedProfile.id == LotteryProfiles.XSMB.id) true else it.isLoadingXsmbDashboard,
+                verifyPresetDrawCount = drawCount,
+                xsmbDashboardWindow = if (state.selectedProfile.id == LotteryProfiles.XSMB.id) drawCount else it.xsmbDashboardWindow,
+                combinedFromDate = from,
+                combinedToDate = to
+            )
+        }
         viewModelScope.launch {
-            val activeStation = if (state.selectedProfile.id == "xsmb") state.selectedXsmbStation else XsmbStation.ALL
-            val chart = withContext(Dispatchers.Default) {
-                predictionEngine.buildThirtyDayAccuracyTrend(
-                    allDrawsSortedAsc = state.draws,
+            val (stats, chart, dashboard) = withContext(Dispatchers.Default) {
+                val evaluatedStats = predictionEngine.evaluateCombinedPerformance(
+                    fromDate = from,
+                    toDate = to,
+                    allDraws = state.draws,
                     profile = state.selectedProfile,
                     algorithms = state.algorithms,
                     prefsMap = state.algorithmPrefs,
                     stationFilter = activeStation,
-                    stationOnlyHistory = state.useStationOnlyHistory,
-                    maxDraws = 30
+                    stationOnlyHistory = state.useStationOnlyHistory
                 )
+                val stationLabel = if (state.selectedProfile.id == "xsmb") activeStation.displayName else state.selectedProfile.shortName
+                val coversLatest30 = to == stationPool.last().date && (drawCount >= 30 || stationPool.size <= drawCount)
+                val trendChart = if (coversLatest30) {
+                    predictionEngine.buildThirtyDayAccuracyTrendFromLogs(
+                        dayLogs = evaluatedStats.dayLogs,
+                        stationLabel = stationLabel,
+                        maxPoints = 30
+                    )
+                } else {
+                    predictionEngine.buildThirtyDayAccuracyTrend(
+                        allDrawsSortedAsc = state.draws,
+                        profile = state.selectedProfile,
+                        algorithms = state.algorithms,
+                        prefsMap = state.algorithmPrefs,
+                        stationFilter = activeStation,
+                        stationOnlyHistory = state.useStationOnlyHistory,
+                        maxDraws = 30
+                    )
+                }
+                val xsmbDash = if (state.selectedProfile.id == LotteryProfiles.XSMB.id) {
+                    predictionEngine.buildXsmbDashboardSummary(evaluatedStats, drawCount)
+                } else {
+                    null
+                }
+                Triple(evaluatedStats, trendChart, xsmbDash)
             }
             _uiState.update {
                 it.copy(
                     isLoadingAccuracyChart = false,
-                    thirtyDayAccuracyChart = chart
+                    isEvaluatingCombined = false,
+                    isLoadingXsmbDashboard = if (state.selectedProfile.id == LotteryProfiles.XSMB.id) false else it.isLoadingXsmbDashboard,
+                    combinedPerformance = stats,
+                    thirtyDayAccuracyChart = chart,
+                    xsmbDashboard = dashboard ?: it.xsmbDashboard
                 )
             }
         }
+    }
+
+    fun selectXsmbDashboardWindow(drawCount: Int) {
+        val state = _uiState.value
+        if (state.selectedProfile.id == LotteryProfiles.XSMB.id) {
+            refreshVerificationAndChart(drawCount)
+        } else {
+            refreshXsmbDashboard(drawCount)
+        }
+    }
+
+    fun refreshXsmbDashboard(drawCount: Int = _uiState.value.xsmbDashboardWindow) {
+        val state = _uiState.value
+        _uiState.update { it.copy(isLoadingXsmbDashboard = true, xsmbDashboardWindow = drawCount) }
+        viewModelScope.launch {
+            val xsmbDraws = if (state.selectedProfile.id == LotteryProfiles.XSMB.id && state.draws.isNotEmpty()) {
+                state.draws
+            } else {
+                lotteryRepo.loadDraws(LotteryProfiles.XSMB)
+            }
+            if (xsmbDraws.size < 2) {
+                _uiState.update { it.copy(isLoadingXsmbDashboard = false) }
+                return@launch
+            }
+            val activeStation = state.selectedXsmbStation
+            val stationPool = if (activeStation != XsmbStation.ALL) {
+                xsmbDraws.filter { activeStation.matchesDate(it.date) }
+            } else {
+                xsmbDraws
+            }.ifEmpty { xsmbDraws }
+            val slice = stationPool.takeLast(drawCount.coerceIn(1, stationPool.size))
+            val summary = withContext(Dispatchers.Default) {
+                val stats = predictionEngine.evaluateCombinedPerformance(
+                    fromDate = slice.first().date,
+                    toDate = slice.last().date,
+                    allDraws = xsmbDraws,
+                    profile = LotteryProfiles.XSMB,
+                    algorithms = state.algorithms,
+                    prefsMap = state.algorithmPrefs,
+                    stationFilter = activeStation,
+                    stationOnlyHistory = state.useStationOnlyHistory
+                )
+                predictionEngine.buildXsmbDashboardSummary(stats, drawCount)
+            }
+            _uiState.update {
+                it.copy(
+                    isLoadingXsmbDashboard = false,
+                    xsmbDashboard = summary
+                )
+            }
+        }
+    }
+
+    fun updateAndRefreshXsmbData() {
+        syncProfile(LotteryProfiles.XSMB, silent = false)
+        fetchAndCompareLast7Days(userInitiated = false)
     }
 
     fun selectScheduleDay(item: StationDailyPrediction) {
@@ -447,6 +570,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         runPrediction()
+        refreshVerificationAndChart()
     }
 
     fun refreshStationSchedulePredictions() {
@@ -540,6 +664,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 runPrediction()
                 refreshStationSchedulePredictions()
                 refreshThirtyDayAccuracyChart()
+                if (_uiState.value.selectedProfile.id != LotteryProfiles.XSMB.id) {
+                    refreshXsmbDashboard()
+                }
             }
 
             if (userInitiated) {
@@ -637,19 +764,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun runHistoricalVerificationForPreset(drawCount: Int) {
-        val state = _uiState.value
-        if (state.draws.isEmpty()) return
-        val pool = if (state.selectedProfile.id == "xsmb" && state.selectedXsmbStation != XsmbStation.ALL) {
-            state.draws.filter { state.selectedXsmbStation.matchesDate(it.date) }
-        } else {
-            state.draws
-        }
-        if (pool.isEmpty()) return
-        val slice = pool.takeLast(drawCount.coerceAtLeast(1))
-        val from = slice.first().date
-        val to = slice.last().date
-        _uiState.update { it.copy(combinedFromDate = from, combinedToDate = to) }
-        runCombinedBacktest()
+        refreshVerificationAndChart(drawCount)
     }
 
     fun runCombinedBacktest() {
@@ -991,6 +1106,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (result.success && (!silent || result.addedRecords > 0)) {
                 if (profile.id == _uiState.value.selectedProfile.id) {
                     loadProfileData(profile, runInitialPrediction = true)
+                } else if (profile.id == LotteryProfiles.XSMB.id) {
+                    refreshStationSchedulePredictions()
+                    refreshXsmbDashboard()
                 }
                 refreshAllProfileMetadata()
             }
